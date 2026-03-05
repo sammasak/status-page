@@ -10,7 +10,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ServiceConfig {
     name: String,
-    url: String,
+    url: String,         // display URL shown to users
+    health_url: String,  // actual URL polled for health
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,21 +64,37 @@ fn services() -> Vec<ServiceConfig> {
         ServiceConfig {
             name: "Grafana".to_string(),
             url: "https://grafana.sammasak.dev".to_string(),
+            health_url: "https://grafana.sammasak.dev/api/health".to_string(),
         },
         ServiceConfig {
             name: "Harbor (Registry)".to_string(),
             url: "https://registry.sammasak.dev".to_string(),
+            health_url: "https://registry.sammasak.dev/api/v2.0/ping".to_string(),
         },
     ]
 }
 
-/// Check a service: only HTTP 2xx counts as UP.
-/// Any 4xx, 5xx, redirect loop, timeout, or connection error = DOWN.
-async fn check_service(client: &reqwest::Client, url: &str) -> bool {
-    match client.get(url).send().await {
+/// Check a service using its dedicated health endpoint.
+/// Grafana: must contain `"database":"ok"` in JSON body.
+/// Harbor ping: body must contain "Pong".
+/// Fallback: any 2xx response counts as UP.
+async fn check_service(client: &reqwest::Client, config: &ServiceConfig) -> bool {
+    match client.get(&config.health_url).send().await {
         Ok(resp) => {
-            let status = resp.status().as_u16();
-            status >= 200 && status < 300
+            if !resp.status().is_success() {
+                return false;
+            }
+            let body = resp.text().await.unwrap_or_default();
+            // Grafana: must contain "database":"ok"
+            if config.health_url.contains("/api/health") {
+                return body.contains("\"database\":\"ok\"");
+            }
+            // Harbor ping: body is "Pong"
+            if config.health_url.contains("/api/v2.0/ping") {
+                return body.trim().trim_matches('"') == "Pong" || body.contains("Pong");
+            }
+            // Fallback: any 2xx
+            true
         }
         Err(_) => false,
     }
@@ -95,7 +112,7 @@ async fn poll_loop(state: AppState) {
         {
             let mut services = state.write().await;
             for svc in services.iter_mut() {
-                let up = check_service(&client, &svc.config.url).await;
+                let up = check_service(&client, &svc.config).await;
                 svc.record(up, Utc::now());
             }
         }
@@ -307,7 +324,7 @@ async fn main() {
             {
                 let mut services = state_clone.write().await;
                 for svc in services.iter_mut() {
-                    let up = check_service(&client, &svc.config.url).await;
+                    let up = check_service(&client, &svc.config).await;
                     svc.record(up, Utc::now());
                 }
             }
