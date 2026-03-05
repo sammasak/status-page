@@ -85,9 +85,10 @@ async fn check_service(client: &reqwest::Client, config: &ServiceConfig) -> bool
                 return false;
             }
             let body = resp.text().await.unwrap_or_default();
-            // Grafana: must contain "database":"ok"
+            // Grafana: must contain "database":"ok" (with or without spaces)
             if config.health_url.contains("/api/health") {
-                return body.contains("\"database\":\"ok\"");
+                return body.contains("\"database\":\"ok\"")
+                    || body.contains("\"database\": \"ok\"");
             }
             // Harbor ping: body is "Pong"
             if config.health_url.contains("/api/v2.0/ping") {
